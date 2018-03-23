@@ -78,6 +78,23 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
     return var
 
 
+def _get_low_rank_conv(input, shape, rank):
+    h, w, in_channel, out_channel = shape
+    part_one = _variable_with_weight_decay(
+        name="low_rank_part_one",
+        shape=[h, w, in_channel, rank],
+        stddev=5e-2,
+        wd=None)
+    part_two = _variable_with_weight_decay(
+        name="low_rank_part_two",
+        shape=[1, 1, rank, out_channel],
+        stddev=5e-2,
+        wd=None)
+
+
+    pass
+
+
 def distorted_inputs():
     """ Construct distorted input for CIFAR training using the Reader ops.
         Those are data generate by distort original picture in order to augment data.
