@@ -9,18 +9,25 @@ import cifar10
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('eval_dir', 'tmp/cifar10_eval',
+tf.app.flags.DEFINE_string('eval_dir', 'tmp/cifar10_eval/ABS/1',
                            """Directory where to write event logs.""")
 tf.app.flags.DEFINE_string('eval_data', 'test',
                            """Either 'test' or 'train_eval'.""")
-tf.app.flags.DEFINE_string('checkpoint_dir', 'tmp/cifar10_train',
+tf.app.flags.DEFINE_string('checkpoint_dir', 'tmp/cifar10_train/ABS/1',
                            """Directory where to read model checkpoints.""")
 tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
                             """How often to run the eval.""")
 tf.app.flags.DEFINE_integer('num_examples', 10000,
                             """Number of examples to run.""")
-tf.app.flags.DEFINE_boolean('run_once', False,
+tf.app.flags.DEFINE_boolean('run_once', True,
                             """Whether to run eval only once.""")
+
+low_ranks = []
+
+for i in range(5):
+    r = int(input('rank for %d layer' % i))
+    low_ranks.append(r)
+sparsity = float(input('how many percent element stay in sparse part?'))
 
 
 def eval_once(saver, summary_writer, top_k_op, summary_op):
@@ -48,7 +55,15 @@ def eval_once(saver, summary_writer, top_k_op, summary_op):
                 step += 1
             precision = true_count / total_sample_count
             print('%s: precision @1 = %.3f' % (datetime.now(), precision))
-
+            total_number = 0
+            for v in tf.trainable_variables():
+                if str(v.name).find('sparse') != -1:
+                    tmp = int(np.prod(v.get_shape().as_list())*sparsity)
+                    print(tmp)
+                    total_number += tmp
+                else:
+                    total_number += int(np.prod(v.get_shape().as_list()))
+            print('total parameter number :', total_number)
             summary = tf.Summary()
             summary.ParseFromString(sess.run(summary_op))
             summary.value.add(tag='Precision @ 1', simple_value=precision)
@@ -64,7 +79,7 @@ def evaluate():
         eval_data = FLAGS.eval_data == 'test'
         images, labels = cifar10.inputs(eval_data)
 
-        logits = cifar10.inference(images)
+        logits = cifar10.inference(images, low_ranks)
 
         top_k_op = tf.nn.in_top_k(logits, labels, 1)
 

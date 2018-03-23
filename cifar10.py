@@ -78,7 +78,7 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
     return var
 
 
-def _get_low_rank_conv(input, shape, rank):
+def _get_low_rank_conv(input_feature_map, shape, rank, scope=None):
     h, w, in_channel, out_channel = shape
     part_one = _variable_with_weight_decay(
         name="low_rank_part_one",
@@ -90,9 +90,44 @@ def _get_low_rank_conv(input, shape, rank):
         shape=[1, 1, rank, out_channel],
         stddev=5e-2,
         wd=None)
+    biases = _variable_on_cpu('biases', [out_channel], initializer=tf.constant_initializer(0.0))
+    s = _variable_with_weight_decay(
+        name='sparse_part',
+        shape=[h, w, in_channel, out_channel],
+        stddev=5e-2,
+        wd=None)
+    tf.add_to_collection('sparse_components', s)
+    inner_conv1 = tf.nn.conv2d(input=input_feature_map, filter=part_one, strides=[1, 1, 1, 1],
+                               padding='SAME', name='inner_conv1')
+    inner_conv2 = tf.nn.conv2d(input=inner_conv1, filter=part_two, strides=[1, 1, 1, 1],
+                               padding='SAME', name='inner_conv2')
+    inner_sparse = tf.nn.conv2d(input=input_feature_map, filter=s, strides=[1, 1, 1, 1],
+                                padding='SAME', name='inner_sparse')
+    final = tf.nn.relu(tf.nn.bias_add(tf.add(inner_conv2, inner_sparse), biases), name=scope.name)
+    return final
 
 
-    pass
+def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
+    m, n = shape
+    low_rank_part_one = _variable_with_weight_decay(name='low_rank_part_one',
+                                                    shape=[m, rank],
+                                                    stddev=0.04,
+                                                    wd=0.004)
+    low_rank_part_two = _variable_with_weight_decay(name='lwo_rank_part_two',
+                                                    shape=[rank, n],
+                                                    stddev=0.04,
+                                                    wd=0.004)
+    biases = _variable_on_cpu('biases', [n], initializer=tf.constant_initializer(0.0))
+    s = _variable_with_weight_decay(name='sparse_part',
+                                    shape=[m, n],
+                                    stddev=0.04,
+                                    wd=0.004)
+    tf.add_to_collection('sparse_components', s)
+    inner_fc1 = tf.matmul(input_feature_map, low_rank_part_one)
+    inner_fc2 = tf.matmul(inner_fc1, low_rank_part_two)
+    inner_spare = tf.matmul(input_feature_map, s)
+    final = tf.nn.relu(tf.add(inner_fc2, inner_spare) + biases, name=scope.name)
+    return final
 
 
 def distorted_inputs():
@@ -133,12 +168,14 @@ def inputs(eval_data):
     return images, labels
 
 
-def inference(images):
+def inference(images, r):
     """the cifar-10 baseline model.
 
 
     Args:
         images: Images returned from distorted_input() or input().
+
+        r: the low ranks
 
     Return:
         logits. we don't compute softmax because
@@ -148,16 +185,7 @@ def inference(images):
     # defined conv1
     with tf.variable_scope('conv1') as scope:
         # aka filter
-        kernel = _variable_with_weight_decay('weights',
-                                             shape=[5, 5, 3, 64],
-                                             stddev=5e-2,
-                                             wd=None)
-        conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
-        bias = _variable_on_cpu('biases',
-                                [64],
-                                tf.constant_initializer(0.0))
-        pre_activation = tf.nn.bias_add(conv, bias)
-        conv1 = tf.nn.relu(pre_activation, name=scope.name)
+        conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], r[0], scope)
         # summary conv1's activations information
         _activation_summary(conv1)
 
@@ -172,14 +200,7 @@ def inference(images):
 
     # conv2 just same as conv1
     with tf.variable_scope('conv2') as scope:
-        kernel = _variable_with_weight_decay('weights',
-                                             shape=[5, 5, 64, 64],
-                                             stddev=5e-2,
-                                             wd=None)
-        conv = tf.nn.conv2d(norm1, kernel, [1, 1, 1, 1], padding='SAME')
-        bias = _variable_on_cpu('biases', [64], initializer=tf.constant_initializer(0.0))
-        pre_activation = tf.nn.bias_add(conv, bias)
-        conv2 = tf.nn.relu(pre_activation, name=scope.name)
+        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[1], scope)
         _activation_summary(conv2)
 
     # norm2
@@ -199,28 +220,18 @@ def inference(images):
         flatten = tf.reshape(pool2, [images.get_shape()[0], -1])
         # get dimension per input. flatten's shape [batch, input_size]
         dim = flatten.get_shape()[1].value
-        weights = _variable_with_weight_decay('weights', shape=[dim, 384],
-                                              stddev=0.04, wd=0.004)
-        bias = _variable_on_cpu('biases', [384], tf.constant_initializer(0.0))
-        local3 = tf.nn.relu(tf.matmul(flatten, weights) + bias, name=scope.name)
+        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[2], scope)
         _activation_summary(local3)
 
     # local4
 
     with tf.variable_scope('local4') as scope:
-        weights = _variable_with_weight_decay('weights', shape=[384, 192],
-                                              stddev=0.04, wd=0.004)
-        bias = _variable_on_cpu('biases', [192], initializer=tf.constant_initializer(0.0))
-        local4 = tf.nn.relu(tf.matmul(local3, weights) + bias, name=scope.name)
+        local4 = _get_low_rank_dense_layer(local3, [384, 192], r[3], scope)
         _activation_summary(local4)
 
     # simple linear layer y = Wx + b without non-linearity Relu
     with tf.variable_scope('logit') as scope:
-        weights = _variable_with_weight_decay('weights', shape=[192, NUM_CLASSES],
-                                              stddev=0.04, wd=0.004)
-        bias = _variable_on_cpu('biases', [NUM_CLASSES],
-                                initializer=tf.constant_initializer(0.0))
-        logit = tf.add(tf.matmul(local4, weights), bias, name=scope.name)
+        logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], r[4], scope)
         _activation_summary(logit)
     return logit
 
