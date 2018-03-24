@@ -7,9 +7,17 @@ import cifar10
 import numpy as np
 
 FLAGS = tf.app.flags.FLAGS
+# low_ranks = []
+#
+# for i in range(5):
+#     r = int(input('rank for %d layer' % i))
+#     low_ranks.append(r)
+# sparsity = float(input('how many percent element stay in sparse part?'))
+#
+modelNumber = str(input('model number?'))
 
 # define  global information
-tf.app.flags.DEFINE_string('train_dir', 'tmp/cifar10_train/ABS/1',
+tf.app.flags.DEFINE_string('train_dir', 'tmp/cifar10_train/ABS/'+modelNumber,
                            """Directory where to write event logs """
                            """and checkpoint.""")
 tf.app.flags.DEFINE_integer('max_steps', 300000,
@@ -18,19 +26,14 @@ tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 tf.app.flags.DEFINE_integer('log_frequency', 10,
                             """How often to log results to the console.""")
-low_ranks = []
-
-for i in range(5):
-    r = int(input('rank for %d layer' % i))
-    low_ranks.append(r)
-sparsity = float(input('how many percent element stay in sparse part?'))
 
 
 def clean_s(var_list):
     ret_list = []
     for s in var_list:
         new_s = tf.reshape(s, [-1])
-        size = int(np.prod(s.shape.as_list()) * sparsity)
+        # size = int(np.prod(s.shape.as_list()) * sparsity)
+        size = int(np.prod(s.shape.as_list()) * 0.1)
         values, indices = tf.nn.top_k(new_s, size)
         val, idx = tf.nn.top_k(indices, int(indices.shape[0]))
         values = tf.gather(values, idx)
@@ -54,7 +57,8 @@ def train():
         with tf.device('/cpu:0'):
             images, labels = cifar10.distorted_inputs()
         # get loss and logit
-        logits = cifar10.inference(images=images, r=low_ranks)
+        # logits = cifar10.inference(images=images, r=low_ranks)
+        logits = cifar10.inference(images=images)
         loss = cifar10.loss(logits=logits, labels=labels)
         # set train_op
         train_op = cifar10.train(loss, global_step)

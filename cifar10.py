@@ -112,16 +112,16 @@ def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
     low_rank_part_one = _variable_with_weight_decay(name='low_rank_part_one',
                                                     shape=[m, rank],
                                                     stddev=0.04,
-                                                    wd=0.004)
+                                                    wd=0.001)
     low_rank_part_two = _variable_with_weight_decay(name='lwo_rank_part_two',
                                                     shape=[rank, n],
                                                     stddev=0.04,
-                                                    wd=0.004)
+                                                    wd=0.001)
     biases = _variable_on_cpu('biases', [n], initializer=tf.constant_initializer(0.0))
     s = _variable_with_weight_decay(name='sparse_part',
                                     shape=[m, n],
                                     stddev=0.04,
-                                    wd=0.004)
+                                    wd=0.001)
     tf.add_to_collection('sparse_components', s)
     inner_fc1 = tf.matmul(input_feature_map, low_rank_part_one)
     inner_fc2 = tf.matmul(inner_fc1, low_rank_part_two)
@@ -168,7 +168,7 @@ def inputs(eval_data):
     return images, labels
 
 
-def inference(images, r):
+def inference(images):
     """the cifar-10 baseline model.
 
 
@@ -185,7 +185,8 @@ def inference(images, r):
     # defined conv1
     with tf.variable_scope('conv1') as scope:
         # aka filter
-        conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], r[0], scope)
+        # conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], r[0], scope)
+        conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], 10, scope)
         # summary conv1's activations information
         _activation_summary(conv1)
 
@@ -200,7 +201,8 @@ def inference(images, r):
 
     # conv2 just same as conv1
     with tf.variable_scope('conv2') as scope:
-        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[1], scope)
+        # conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[1], scope)
+        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], 10, scope)
         _activation_summary(conv2)
 
     # norm2
@@ -220,18 +222,21 @@ def inference(images, r):
         flatten = tf.reshape(pool2, [images.get_shape()[0], -1])
         # get dimension per input. flatten's shape [batch, input_size]
         dim = flatten.get_shape()[1].value
-        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[2], scope)
+        # local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[2], scope)
+        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], 10, scope)
         _activation_summary(local3)
 
     # local4
 
     with tf.variable_scope('local4') as scope:
-        local4 = _get_low_rank_dense_layer(local3, [384, 192], r[3], scope)
+        # local4 = _get_low_rank_dense_layer(local3, [384, 192], r[3], scope)
+        local4 = _get_low_rank_dense_layer(local3, [384, 192], 10, scope)
         _activation_summary(local4)
 
     # simple linear layer y = Wx + b without non-linearity Relu
     with tf.variable_scope('logit') as scope:
-        logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], r[4], scope)
+        # logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], r[4], scope)
+        logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], 10, scope)
         _activation_summary(logit)
     return logit
 
@@ -244,6 +249,8 @@ def loss(logits, labels):
                                                                    name='cross_entropy_per_example')
     # mean the cross entropy
     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
+    # softmax = tf.nn.softmax(logits, name='softmax')
+    # cross_entropy = -tf.reduce_mean()
     tf.add_to_collection('losses', cross_entropy_mean)
     # this add_n operation help us get total loss
     return tf.add_n(tf.get_collection('losses'), name='total_loss')
