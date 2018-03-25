@@ -7,7 +7,7 @@ from six.moves import urllib
 # third-party
 import tensorflow as tf
 import cifar10_input
-
+import numpy as np
 
 FLAGS = tf.app.flags.FLAGS
 # set sth global variables
@@ -103,6 +103,7 @@ def _get_low_rank_conv(input_feature_map, shape, rank, scope=None):
                                padding='SAME', name='inner_conv2')
     inner_sparse = tf.nn.conv2d(input=input_feature_map, filter=s, strides=[1, 1, 1, 1],
                                 padding='SAME', name='inner_sparse')
+    # final = tf.nn.relu(tf.nn.bias_add(inner_conv2, biases), name=scope.name)
     final = tf.nn.relu(tf.nn.bias_add(tf.add(inner_conv2, inner_sparse), biases), name=scope.name)
     return final
 
@@ -127,7 +128,29 @@ def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
     inner_fc2 = tf.matmul(inner_fc1, low_rank_part_two)
     inner_spare = tf.matmul(input_feature_map, s)
     final = tf.nn.relu(tf.add(inner_fc2, inner_spare) + biases, name=scope.name)
+    # final = tf.nn.relu(inner_fc2 + biases, name=scope.name)
     return final
+
+
+def clean_s(var_list):
+    ret_list = []
+    for s in var_list:
+        new_s = tf.reshape(s, [-1])
+        # size = int(np.prod(s.shape.as_list()) * sparsity)
+        size = int(np.prod(s.shape.as_list()) * 0.1)
+        values, indices = tf.nn.top_k(new_s, size)
+        val, idx = tf.nn.top_k(indices, int(indices.shape[0]))
+        values = tf.gather(values, idx)
+        indices = tf.gather(indices, idx)
+        values = tf.reverse(values, axis=[0])
+        indices = tf.reverse(indices, axis=[0])
+        indices = tf.cast(indices, tf.int32)
+        add_one = tf.sparse_to_dense(sparse_indices=indices, output_shape=new_s.shape, sparse_values=values)
+        add_one = tf.reshape(add_one, s.shape)
+        s_zero = tf.zeros(s.shape)
+        s_add = tf.add(s_zero, add_one)
+        ret_list.append(tf.assign(s, s_add))
+    return ret_list
 
 
 def distorted_inputs():
@@ -185,8 +208,16 @@ def inference(images):
     # defined conv1
     with tf.variable_scope('conv1') as scope:
         # aka filter
-        # conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], r[0], scope)
-        conv1 = _get_low_rank_conv(images, [5, 5, 3, 64], 10, scope)
+        kernel = _variable_with_weight_decay('weights',
+                                             shape=[5, 5, 3, 64],
+                                             stddev=5e-2,
+                                             wd=None)
+        conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
+        bias = _variable_on_cpu('biases',
+                                [64],
+                                tf.constant_initializer(0.0))
+        pre_activation = tf.nn.bias_add(conv, bias)
+        conv1 = tf.nn.relu(pre_activation, name=scope.name)
         # summary conv1's activations information
         _activation_summary(conv1)
 
@@ -202,7 +233,7 @@ def inference(images):
     # conv2 just same as conv1
     with tf.variable_scope('conv2') as scope:
         # conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[1], scope)
-        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], 10, scope)
+        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], 24, scope)
         _activation_summary(conv2)
 
     # norm2
@@ -223,14 +254,17 @@ def inference(images):
         # get dimension per input. flatten's shape [batch, input_size]
         dim = flatten.get_shape()[1].value
         # local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[2], scope)
-        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], 10, scope)
+        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], 180, scope)
         _activation_summary(local3)
 
-    # local4
+    # batch normalization
 
+    # bn1 = tf.nn.batch_normalization()
+
+    # local4
     with tf.variable_scope('local4') as scope:
         # local4 = _get_low_rank_dense_layer(local3, [384, 192], r[3], scope)
-        local4 = _get_low_rank_dense_layer(local3, [384, 192], 10, scope)
+        local4 = _get_low_rank_dense_layer(local3, [384, 192], 120, scope)
         _activation_summary(local4)
 
     # simple linear layer y = Wx + b without non-linearity Relu
@@ -244,13 +278,16 @@ def inference(images):
 def loss(logits, labels):
     """Add L2Loss to all trainable variables except biases"""
     labels = tf.cast(labels, tf.int64)
-    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels,
-                                                                   logits=logits,
-                                                                   name='cross_entropy_per_example')
-    # mean the cross entropy
-    cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
-    # softmax = tf.nn.softmax(logits, name='softmax')
-    # cross_entropy = -tf.reduce_mean()
+    one_hot_labels = tf.one_hot(labels, depth=10)
+    # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels,
+    #                                                                logits=logits,
+    #                                                                name='cross_entropy_per_example')
+    # # mean the cross entropy
+    # cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
+    softmax = tf.nn.softmax(logits, name='softmax')
+    basic_cost = - (tf.cast(one_hot_labels, tf.float32) * tf.log(softmax + 1e-8))
+    sum_cost = tf.reduce_sum(basic_cost, axis=1)
+    cross_entropy_mean = tf.reduce_mean(sum_cost)
     tf.add_to_collection('losses', cross_entropy_mean)
     # this add_n operation help us get total loss
     return tf.add_n(tf.get_collection('losses'), name='total_loss')
@@ -289,7 +326,8 @@ def train(total_loss, global_step):
     # compute gradients, control_dependencies help us to ensure last loss information
     # has been processed
     with tf.control_dependencies([loss_averages_op]):
-        opt = tf.train.GradientDescentOptimizer(lr)
+        # opt = tf.train.GradientDescentOptimizer(lr)
+        opt = tf.train.AdamOptimizer(1e-4)
         grads = opt.compute_gradients(total_loss)
 
     # apply gradients
@@ -309,8 +347,12 @@ def train(total_loss, global_step):
     variable_averages = tf.train.ExponentialMovingAverage(
         MOVING_AVERAGE_DECAY, global_step)
     variable_averages_op = variable_averages.apply(tf.trainable_variables())
-
-    with tf.control_dependencies([apply_gradient_op, variable_averages_op]):
+    with tf.control_dependencies([apply_gradient_op]):
+        clean_list = tf.get_collection('sparse_components')
+        clean_list = clean_s(clean_list)
+        clean_op = [c.op for c in clean_list]
+        # clean_op = tf.group(clean_op)
+    with tf.control_dependencies(clean_op+[variable_averages_op]):
         # just a placeholder can define this op later
         train_op = tf.no_op(name='train')
     return train_op

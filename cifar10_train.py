@@ -20,11 +20,11 @@ modelNumber = str(input('model number?'))
 tf.app.flags.DEFINE_string('train_dir', 'tmp/cifar10_train/ABS/'+modelNumber,
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('max_steps', 300000,
+tf.app.flags.DEFINE_integer('max_steps', 1000000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
-tf.app.flags.DEFINE_integer('log_frequency', 10,
+tf.app.flags.DEFINE_integer('log_frequency', 100,
                             """How often to log results to the console.""")
 
 
@@ -62,9 +62,13 @@ def train():
         loss = cifar10.loss(logits=logits, labels=labels)
         # set train_op
         train_op = cifar10.train(loss, global_step)
+        for v in tf.trainable_variables():
+            print(v)
+        # nonzero = tf.count_nonzero(tf.get_collection('sparse_components')[-1])
         # define a LoggerHook to log something
-        clean_list = tf.get_collection('sparse_components')
-        clean_op = clean_s(clean_list)
+        # clean_list = tf.get_collection('sparse_components')
+        # clean_list = clean_s(clean_list)
+        # clean_op = [c.op for c in clean_list]
 
         class _LoggerHook(tf.train.SessionRunHook):
             """
@@ -87,7 +91,7 @@ def train():
                     example_per_sec = FLAGS.log_frequency * FLAGS.batch_size / duration
                     sec_per_batch = float(duration / FLAGS.log_frequency)
 
-                    format_str = ('%s: step %d, loss = %.2f (%.1f examples/sec;'
+                    format_str = ('%s: step %d, loss = %.6f (%.1f examples/sec;'
                                   '%.3f sec/batch)')
                     print(format_str % (datetime.now(), self._step, loss_value,
                                         example_per_sec, sec_per_batch))
@@ -100,16 +104,18 @@ def train():
                 config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement)) as mon_sess:
             while not mon_sess.should_stop():
                 mon_sess.run(train_op)
-                if not mon_sess.should_stop():
-                    mon_sess.run(clean_op)
-
+                # if not mon_sess.should_stop():
+                #     mon_sess.run(clean_op)
+                # print(mon_sess.run(nonzero))
 
 
 def main(argv = None):
     cifar10.maybe_download_and_extract()
-    if tf.gfile.Exists(FLAGS.train_dir):
+    new_model = str(input('Train a new model?'))
+    new_model = new_model == 'True'
+    if tf.gfile.Exists(FLAGS.train_dir) and new_model:
         tf.gfile.DeleteRecursively(FLAGS.train_dir)
-    tf.gfile.MakeDirs(FLAGS.train_dir)
+        tf.gfile.MakeDirs(FLAGS.train_dir)
     train()
 
 

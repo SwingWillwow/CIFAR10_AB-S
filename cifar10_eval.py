@@ -46,13 +46,15 @@ def eval_once(saver, summary_writer, truth_num, summary_op, logits):
             for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
                 threads.extend(qr.create_threads(sess, coord=coord, daemon=True,
                                                  start=True))
-            for v in tf.trainable_variables():
-                print(sess.run(v))
-            return
+            # for v in tf.trainable_variables():
+            #     print(sess.run(v))
             num_iter = int(math.ceil(FLAGS.num_examples / FLAGS.batch_size))
             true_count = 0
             total_sample_count = num_iter * FLAGS.batch_size
             step = 0
+            # clean_list = tf.get_collection('sparse_components')
+            # non_zero = tf.count_nonzero(clean_list[-1])
+            # print(sess.run(non_zero))
             while step < num_iter and not coord.should_stop():
                 # predictions = sess.run([predict])
                 # print(sess.run(logits))
@@ -63,15 +65,14 @@ def eval_once(saver, summary_writer, truth_num, summary_op, logits):
             print('%s: precision @1 = %.3f' % (datetime.now(), precision))
             print(true_count)
             print(total_sample_count)
-
-            # total_number = 0
-            # for v in tf.trainable_variables():
-            #     if str(v.name).find('sparse') != -1:
-            #         tmp = int(np.prod(v.get_shape().as_list())*0.1)
-            #         total_number += tmp
-            #     else:
-            #         total_number += int(np.prod(v.get_shape().as_list()))
-            # print('total parameter number :', total_number)
+            total_number = 0
+            for v in tf.trainable_variables():
+                if str(v.name).find('sparse') != -1:
+                    tmp = int(np.prod(v.get_shape().as_list())*0.1)
+                    total_number += tmp
+                else:
+                    total_number += int(np.prod(v.get_shape().as_list()))
+            print('total parameter number :', total_number)
             summary = tf.Summary()
             summary.ParseFromString(sess.run(summary_op))
             summary.value.add(tag='Precision @ 1', simple_value=precision)
