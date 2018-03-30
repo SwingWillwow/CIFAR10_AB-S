@@ -4,6 +4,7 @@ import re
 import sys
 import tarfile
 from six.moves import urllib
+from pathlib import Path
 # third-party
 import tensorflow as tf
 import cifar10_input
@@ -13,7 +14,7 @@ FLAGS = tf.app.flags.FLAGS
 # set sth global variables
 tf.app.flags.DEFINE_integer('batch_size', 128,
                             """Number of images to process in a batch""")
-tf.app.flags.DEFINE_string('data_dir', 'tmp/cifar10_data',
+tf.app.flags.DEFINE_string('data_dir', str(Path.home())+'/training_data/cifar10_data',
                            """Path to the CIFAR-10 data directory.""")
 tf.app.flags.DEFINE_boolean('use_fp16', False,
                             """Training the model use fp16""")
@@ -33,6 +34,7 @@ MOVING_AVERAGE_DECAY = 0.9999     # the decay to use for moving average
 NUM_EPOCH_PER_DECAY = 350.0       # EPOCH after which learning rate decay
 LEARNING_RATE_DECAY_FACTOR = 0.1  # learning rate decay factor
 INITIAL_LEARNING_RATE = 0.1       # initial learning rate
+MAX_STEPS = 1000000               # max step to train, ensure that last model was sparsity
 
 
 # prefix for multiple GPUs training
@@ -90,7 +92,7 @@ def _get_low_rank_conv(input_feature_map, shape, rank, scope=None):
         shape=[1, 1, rank, out_channel],
         stddev=5e-2,
         wd=None)
-    biases = _variable_on_cpu('biases', [out_channel], initializer=tf.constant_initializer(0.0))
+    biases = _variable_on_cpu('biases', [out_channel], initializer=tf.constant_initializer(0.1))
     s = _variable_with_weight_decay(
         name='sparse_part',
         shape=[h, w, in_channel, out_channel],
@@ -108,7 +110,7 @@ def _get_low_rank_conv(input_feature_map, shape, rank, scope=None):
     return final
 
 
-def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
+def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope, is_logit):
     m, n = shape
     low_rank_part_one = _variable_with_weight_decay(name='low_rank_part_one',
                                                     shape=[m, rank],
@@ -118,7 +120,7 @@ def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
                                                     shape=[rank, n],
                                                     stddev=0.04,
                                                     wd=0.001)
-    biases = _variable_on_cpu('biases', [n], initializer=tf.constant_initializer(0.0))
+    biases = _variable_on_cpu('biases', [n], initializer=tf.constant_initializer(0.1))
     s = _variable_with_weight_decay(name='sparse_part',
                                     shape=[m, n],
                                     stddev=0.04,
@@ -127,8 +129,10 @@ def _get_low_rank_dense_layer(input_feature_map, shape, rank, scope):
     inner_fc1 = tf.matmul(input_feature_map, low_rank_part_one)
     inner_fc2 = tf.matmul(inner_fc1, low_rank_part_two)
     inner_spare = tf.matmul(input_feature_map, s)
-    final = tf.nn.relu(tf.add(inner_fc2, inner_spare) + biases, name=scope.name)
-    # final = tf.nn.relu(inner_fc2 + biases, name=scope.name)
+    if is_logit:
+        final = tf.nn.bias_add(tf.add(inner_fc2, inner_spare), biases, name=scope.name)
+    else:
+        final = tf.nn.relu(tf.add(inner_fc2, inner_spare) + biases, name=scope.name)
     return final
 
 
@@ -137,7 +141,7 @@ def clean_s(var_list):
     for s in var_list:
         new_s = tf.reshape(s, [-1])
         # size = int(np.prod(s.shape.as_list()) * sparsity)
-        size = int(np.prod(s.shape.as_list()) * 0.1)
+        size = int(np.prod(s.shape.as_list()) * 0.125)
         values, indices = tf.nn.top_k(new_s, size)
         val, idx = tf.nn.top_k(indices, int(indices.shape[0]))
         values = tf.gather(values, idx)
@@ -147,9 +151,9 @@ def clean_s(var_list):
         indices = tf.cast(indices, tf.int32)
         add_one = tf.sparse_to_dense(sparse_indices=indices, output_shape=new_s.shape, sparse_values=values)
         add_one = tf.reshape(add_one, s.shape)
-        s_zero = tf.zeros(s.shape)
-        s_add = tf.add(s_zero, add_one)
-        ret_list.append(tf.assign(s, s_add))
+        # s_zero = tf.zeros(s.shape)
+        # s_add = tf.add(s_zero, add_one)
+        ret_list.append(tf.assign(s, add_one))
     return ret_list
 
 
@@ -191,7 +195,7 @@ def inputs(eval_data):
     return images, labels
 
 
-def inference(images):
+def inference(images, r):
     """the cifar-10 baseline model.
 
 
@@ -215,7 +219,7 @@ def inference(images):
         conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
         bias = _variable_on_cpu('biases',
                                 [64],
-                                tf.constant_initializer(0.0))
+                                tf.constant_initializer(0.1))
         pre_activation = tf.nn.bias_add(conv, bias)
         conv1 = tf.nn.relu(pre_activation, name=scope.name)
         # summary conv1's activations information
@@ -232,8 +236,8 @@ def inference(images):
 
     # conv2 just same as conv1
     with tf.variable_scope('conv2') as scope:
-        # conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[1], scope)
-        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], 24, scope)
+        conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], r[0], scope)
+        # conv2 = _get_low_rank_conv(norm1, [5, 5, 64, 64], 48, scope)
         _activation_summary(conv2)
 
     # norm2
@@ -253,8 +257,9 @@ def inference(images):
         flatten = tf.reshape(pool2, [images.get_shape()[0], -1])
         # get dimension per input. flatten's shape [batch, input_size]
         dim = flatten.get_shape()[1].value
-        # local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[2], scope)
-        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], 180, scope)
+        local3 = _get_low_rank_dense_layer(flatten, [dim, 384], r[1], scope,  False)
+        # print(dim)
+        # local3 = _get_low_rank_dense_layer(flatten, [dim, 384], 128, scope, False)
         _activation_summary(local3)
 
     # batch normalization
@@ -263,14 +268,14 @@ def inference(images):
 
     # local4
     with tf.variable_scope('local4') as scope:
-        # local4 = _get_low_rank_dense_layer(local3, [384, 192], r[3], scope)
-        local4 = _get_low_rank_dense_layer(local3, [384, 192], 120, scope)
+        local4 = _get_low_rank_dense_layer(local3, [384, 192], r[2], scope, False)
+        # local4 = _get_low_rank_dense_layer(local3, [384, 192], 64, scope, False)
         _activation_summary(local4)
 
     # simple linear layer y = Wx + b without non-linearity Relu
     with tf.variable_scope('logit') as scope:
-        # logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], r[4], scope)
-        logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], 10, scope)
+        logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], r[3], scope, True)
+        # logit = _get_low_rank_dense_layer(local4, [192, NUM_CLASSES], 8, scope, False)
         _activation_summary(logit)
     return logit
 
@@ -347,12 +352,15 @@ def train(total_loss, global_step):
     variable_averages = tf.train.ExponentialMovingAverage(
         MOVING_AVERAGE_DECAY, global_step)
     variable_averages_op = variable_averages.apply(tf.trainable_variables())
-    with tf.control_dependencies([apply_gradient_op]):
+
+    def clean_fn():
         clean_list = tf.get_collection('sparse_components')
         clean_list = clean_s(clean_list)
-        clean_op = [c.op for c in clean_list]
-        # clean_op = tf.group(clean_op)
-    with tf.control_dependencies(clean_op+[variable_averages_op]):
+        clean_list = [c.op for c in clean_list]
+        return clean_list
+    with tf.control_dependencies([apply_gradient_op]):
+        clean_s_op = clean_fn()
+    with tf.control_dependencies(clean_s_op+[variable_averages_op]):
         # just a placeholder can define this op later
         train_op = tf.no_op(name='train')
     return train_op

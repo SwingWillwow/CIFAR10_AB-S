@@ -7,17 +7,17 @@ import cifar10
 import numpy as np
 
 FLAGS = tf.app.flags.FLAGS
-# low_ranks = []
-#
-# for i in range(5):
-#     r = int(input('rank for %d layer' % i))
-#     low_ranks.append(r)
+low_ranks = []
+
+for i in range(1, 5):
+    r = int(input('rank for %d layer' % i))
+    low_ranks.append(r)
 # sparsity = float(input('how many percent element stay in sparse part?'))
 #
 modelNumber = str(input('model number?'))
 
 # define  global information
-tf.app.flags.DEFINE_string('train_dir', 'tmp/cifar10_train/ABS/'+modelNumber,
+tf.app.flags.DEFINE_string('train_dir', 'cifar10_train/ABS/'+modelNumber,
                            """Directory where to write event logs """
                            """and checkpoint.""")
 tf.app.flags.DEFINE_integer('max_steps', 1000000,
@@ -26,27 +26,6 @@ tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 tf.app.flags.DEFINE_integer('log_frequency', 100,
                             """How often to log results to the console.""")
-
-
-def clean_s(var_list):
-    ret_list = []
-    for s in var_list:
-        new_s = tf.reshape(s, [-1])
-        # size = int(np.prod(s.shape.as_list()) * sparsity)
-        size = int(np.prod(s.shape.as_list()) * 0.1)
-        values, indices = tf.nn.top_k(new_s, size)
-        val, idx = tf.nn.top_k(indices, int(indices.shape[0]))
-        values = tf.gather(values, idx)
-        indices = tf.gather(indices, idx)
-        values = tf.reverse(values, axis=[0])
-        indices = tf.reverse(indices, axis=[0])
-        indices = tf.cast(indices, tf.int32)
-        add_one = tf.sparse_to_dense(sparse_indices=indices, output_shape=new_s.shape, sparse_values=values)
-        add_one = tf.reshape(add_one, s.shape)
-        s_zero = tf.zeros(s.shape)
-        s_add = tf.add(s_zero, add_one)
-        ret_list.append(tf.assign(s, s_add))
-    return ret_list
 
 
 def train():
@@ -58,13 +37,13 @@ def train():
             images, labels = cifar10.distorted_inputs()
         # get loss and logit
         # logits = cifar10.inference(images=images, r=low_ranks)
-        logits = cifar10.inference(images=images)
+        logits = cifar10.inference(images=images,r=low_ranks)
         loss = cifar10.loss(logits=logits, labels=labels)
         # set train_op
         train_op = cifar10.train(loss, global_step)
         for v in tf.trainable_variables():
             print(v)
-        # nonzero = tf.count_nonzero(tf.get_collection('sparse_components')[-1])
+        nonzero = tf.count_nonzero(tf.get_collection('sparse_components')[-1])
         # define a LoggerHook to log something
         # clean_list = tf.get_collection('sparse_components')
         # clean_list = clean_s(clean_list)
@@ -105,8 +84,8 @@ def train():
             while not mon_sess.should_stop():
                 mon_sess.run(train_op)
                 # if not mon_sess.should_stop():
-                #     mon_sess.run(clean_op)
-                # print(mon_sess.run(nonzero))
+                #     print(mon_sess.run(nonzero))
+                # print(tf.train.global_step(mon_sess, global_step))
 
 
 def main(argv = None):
